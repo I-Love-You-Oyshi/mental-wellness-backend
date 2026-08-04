@@ -1,56 +1,71 @@
-// index.js
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
-const fetch = require("node-fetch"); // required
+const { GoogleGenAI } = require("@google/genai");
 
 dotenv.config();
 
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
-// Chat endpoint
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY,
+});
+
+app.get("/", (req, res) => {
+  res.send("Health's Best Friend AI Backend is running.");
+});
+
 app.post("/chat", async (req, res) => {
-  const userMessage = req.body.message;
-
-  if (!userMessage) {
-    return res.status(400).json({ error: "No message provided" });
-  }
-
   try {
-    const response = await fetch(
-      "https://api-inference.huggingface.co/models/distilgpt2",
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${process.env.HF_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          inputs: userMessage,
-          parameters: { max_new_tokens: 100 },
-        }),
-      }
-    );
+    const message = req.body.message;
 
-    const data = await response.json();
-
-    // HuggingFace returns generated text in data[0].generated_text
-    if (Array.isArray(data) && data[0]?.generated_text) {
-      res.json({ reply: data[0].generated_text });
-    } else {
-      console.error("HuggingFace API error:", data);
-      res.json({ reply: "AI service temporarily unavailable. Try again later." });
+    if (!message) {
+      return res.status(400).json({
+        reply: "Please enter a message.",
+      });
     }
-  } catch (error) {
-    console.error("Server error:", error);
-    res.status(500).json({ reply: "Server error. Please try again later." });
+
+    const prompt = `
+You are an empathetic AI mental wellness assistant inside the "Health's Best Friend" application.
+
+Rules:
+- Be supportive and calm.
+- Never diagnose diseases.
+- Encourage professional help if someone appears in crisis.
+- Keep responses under 180 words.
+- Use simple language.
+- Focus on stress, anxiety, motivation, sleep, emotions, and self-care.
+
+User:
+${message}
+`;
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+    });
+
+    const reply =
+        response.text ||
+        "I'm here for you. Could you tell me a little more?";
+
+    res.json({
+      reply,
+    });
+  } catch (e) {
+    console.error(e);
+
+    res.status(500).json({
+      reply: "Internal server error.",
+    });
   }
 });
 
-// Port
 const PORT = process.env.PORT || 10000;
+
 app.listen(PORT, () => {
-  console.log(`Mental Wellness backend running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
