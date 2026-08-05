@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
-const { GoogleGenAI } = require("@google/genai");
+const fetch = require("node-fetch");
 
 dotenv.config();
 
@@ -10,14 +10,41 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
+const API_KEY = process.env.GEMINI_API_KEY;
 
+// -------------------------------
+// Home Route
+// -------------------------------
 app.get("/", (req, res) => {
-  res.send("Health's Best Friend AI Backend is running.");
+  res.send("✅ Health's Best Friend Backend is Running");
 });
 
+// -------------------------------
+// List Available Gemini Models
+// -------------------------------
+app.get("/models", async (req, res) => {
+  try {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${API_KEY}`
+    );
+
+    const data = await response.json();
+
+    console.log("Available Models:");
+    console.log(JSON.stringify(data, null, 2));
+
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      error: err.message,
+    });
+  }
+});
+
+// -------------------------------
+// Mental Wellness Chat
+// -------------------------------
 app.post("/chat", async (req, res) => {
   try {
     const message = req.body.message;
@@ -29,37 +56,69 @@ app.post("/chat", async (req, res) => {
     }
 
     const prompt = `
-You are an empathetic AI mental wellness assistant inside the "Health's Best Friend" application.
+You are an empathetic AI mental wellness assistant inside the Health's Best Friend application.
 
 Rules:
-- Be supportive and calm.
+- Be calm and supportive.
 - Never diagnose diseases.
+- Never prescribe medicine.
 - Encourage professional help if someone appears in crisis.
 - Keep responses under 180 words.
-- Use simple language.
-- Focus on stress, anxiety, motivation, sleep, emotions, and self-care.
+- Use simple English.
+- Focus on stress, anxiety, emotions, sleep, motivation and self-care.
 
 User:
 ${message}
 `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-    });
+    // We will replace this model after checking /models
+    const MODEL = "gemini-2.5-flash-lite";
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${API_KEY}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          contents: [
+            {
+              parts: [
+                {
+                  text: prompt,
+                },
+              ],
+            },
+          ],
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    console.log("Gemini Response:");
+    console.log(JSON.stringify(data, null, 2));
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        reply: data.error?.message || "Gemini API Error",
+        details: data,
+      });
+    }
 
     const reply =
-        response.text ||
-        "I'm here for you. Could you tell me a little more?";
+      data.candidates?.[0]?.content?.parts?.[0]?.text ||
+      "I'm here for you. Could you tell me a little more?";
 
     res.json({
       reply,
     });
-  } catch (e) {
-    console.error(e);
+  } catch (err) {
+    console.error(err);
 
     res.status(500).json({
-      reply: "Internal server error.",
+      reply: err.message,
     });
   }
 });
@@ -67,5 +126,5 @@ ${message}
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`✅ Server running on port ${PORT}`);
 });
