@@ -5,10 +5,12 @@
   "scripts": {
     "start": "node index.js"
   },
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
-    "node-fetch": "^2.7.0",
-    "cors": "^2.8.6",
+    "cors": "^2.8.5",
     "dotenv": "^17.4.2",
-    "express": "^5.2.1"
+    "express": "^5.1.0"
   }
 }
