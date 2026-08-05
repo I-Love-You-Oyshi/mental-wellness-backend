@@ -51,80 +51,67 @@ app.post("/chat", async (req, res) => {
 
     if (!message) {
       return res.status(400).json({
-        reply: "Please enter a message.",
+        reply: "Please enter a message."
       });
     }
 
-    const prompt = `
-You are an empathetic AI mental wellness assistant inside the Health's Best Friend application.
-
-Rules:
-- Be calm and supportive.
-- Never diagnose diseases.
-- Never prescribe medicine.
-- Encourage professional help if someone appears in crisis.
-- Keep responses under 180 words.
-- Use simple English.
-- Focus on stress, anxiety, emotions, sleep, motivation and self-care.
-
-User:
-${message}
-`;
-
-    // We will replace this model after checking /models
-    const MODEL = "gemini-2.5-flash-lite";
-
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${API_KEY}`,
       {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
+          "Content-Type": "application/json"
         },
         body: JSON.stringify({
+          systemInstruction: {
+            parts: [
+              {
+                text: `You are an empathetic mental wellness assistant inside Health's Best Friend.
+
+Rules:
+- Be supportive.
+- Never diagnose diseases.
+- Never prescribe medicine.
+- Encourage professional help in emergencies.
+- Keep replies under 180 words.`
+              }
+            ]
+          },
           contents: [
             {
+              role: "user",
               parts: [
                 {
-                  text: prompt,
-                },
-              ],
-            },
-          ],
-        }),
+                  text: message
+                }
+              ]
+            }
+          ]
+        })
       }
     );
 
     const data = await response.json();
 
-    console.log("Gemini Response:");
     console.log(JSON.stringify(data, null, 2));
 
     if (!response.ok) {
       return res.status(response.status).json({
-        reply: data.error?.message || "Gemini API Error",
-        details: data,
+        reply: data.error?.message || "Gemini API Error"
       });
     }
 
-    const reply =
-      data.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "I'm here for you. Could you tell me a little more?";
-
     res.json({
-      reply,
+      reply:
+        data.candidates?.[0]?.content?.parts?.[0]?.text ??
+        "I'm here for you."
     });
-  } catch (err) {
-    console.error(err);
+
+  } catch (e) {
+    console.error(e);
 
     res.status(500).json({
-      reply: err.message,
+      reply: e.toString()
     });
   }
-});
-
-const PORT = process.env.PORT || 10000;
-
-app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
 });
