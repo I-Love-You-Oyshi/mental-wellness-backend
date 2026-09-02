@@ -11,8 +11,19 @@ app.use(express.json());
 
 const API_KEY = process.env.GEMINI_API_KEY;
 
+console.log("=== DEBUG INFO ===");
+console.log("GEMINI_API_KEY exists:", !!API_KEY);
+console.log("GEMINI_API_KEY length:", API_KEY ? API_KEY.length : 0);
+console.log("All env keys containing 'GEMINI' or 'KEY':", 
+  Object.keys(process.env).filter(k => k.includes("GEMINI") || k.includes("KEY") || k.includes("API"))
+);
+console.log("==================");
 
-
+if (!API_KEY) {
+  console.error("❌ GEMINI_API_KEY is missing.");
+  // Temporary: do NOT exit so we can see the logs
+  // process.exit(1);
+}
 // ============================================================
 // Configuration - Models (newest first)
 // ============================================================
