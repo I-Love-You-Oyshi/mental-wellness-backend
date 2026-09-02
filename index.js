@@ -7,92 +7,170 @@ dotenv.config();
 const app = express();
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 
 const API_KEY = process.env.GEMINI_API_KEY;
 
 if (!API_KEY) {
-  console.error("❌ GEMINI_API_KEY is missing.");
+  console.error("GEMINI_API_KEY is missing.");
   process.exit(1);
 }
-
-// ============================================================
-// Models (newest first)
-// ============================================================
 
 const MODELS = [
   "gemini-3.7-flash",
   "gemini-3.6-flash",
-  "gemini-flash-latest",
   "gemini-3.5-flash",
-  "gemini-3.5-flash-lite",
+  "gemini-3.5-flash-lite"
 ];
-
-// ============================================================
-// Home Route
-// ============================================================
 
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
     service: "Health's Best Friend Backend",
-    models: MODELS,
+    models: MODELS
   });
 });
 
-// ============================================================
-// Helpers
-// ============================================================
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "healthy",
+    timestamp: new Date().toISOString()
+  });
+});
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function callGemini(contents, maxRetriesPerModel = 2) {
+async function callGemini(contents, systemInstruction, maxRetries = 2) {
   let lastError = null;
 
   for (const model of MODELS) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${API_KEY}`;
+    const url =
+      "https://generativelanguage.googleapis.com/v1beta/models/" +
+      model +
+      ":generateContent?key=" +
+      API_KEY;
 
-    for (let attempt = 0; attempt <= maxRetriesPerModel; attempt++) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
+        console.log(
+          "Trying model:",
+          model,
+          "Attempt:",
+          attempt + 1
+        );
+
         const response = await fetch(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ contents }),
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            systemInstruction: {
+              parts: [
+                {
+                  text: systemInstruction
+                }
+              ]
+            },
+            contents: contents,
+            generationConfig: {
+              temperature: 0.7,
+              maxOutputTokens: 500
+            }
+          })
         });
 
-        const data = await response.json();
+        let data;
+
+        try {
+          data = await response.json();
+        } catch (error) {
+          data = {
+            error: {
+              message: "Invalid response from Gemini."
+            }
+          };
+        }
 
         console.log(
-          `Gemini [${model}] attempt ${attempt + 1}/${maxRetriesPerModel + 1}: ${response.status}`
+          "Gemini:",
+          model,
+          "Status:",
+          response.status
         );
 
         if (response.ok) {
-          return { success: true, response, data, model };
+          return {
+            success: true,
+            response: response,
+            data: data,
+            model: model
+          };
         }
 
-        // Retry only on temporary errors
+        lastError = {
+          response: response,
+          data: data,
+          model: model
+        };
+
+        console.error(
+          "Gemini error:",
+          JSON.stringify(data, null, 2)
+        );
+
         if ([429, 500, 502, 503, 504].includes(response.status)) {
-          if (attempt < maxRetriesPerModel) {
+          if (attempt < maxRetries) {
             const delay = Math.pow(2, attempt) * 1000;
-            console.log(`⚠️ ${model} unavailable. Retrying in ${delay}ms...`);
+
+            console.log(
+              "Retrying in",
+              delay,
+              "ms..."
+            );
+
             await sleep(delay);
             continue;
           }
-          console.log(`❌ ${model} failed after retries. Trying next model...`);
-          lastError = { response, data };
+
+          console.log(
+            model,
+            "failed. Trying next model."
+          );
+
           break;
         }
 
-        // Non-retryable error
-        return { success: false, response, data, model };
-      } catch (err) {
-        console.error(`Network error on ${model}:`, err.message);
-        if (attempt < maxRetriesPerModel) {
-          await sleep(Math.pow(2, attempt) * 1000);
-        } else {
-          lastError = err;
+        return {
+          success: false,
+          response: response,
+          data: data,
+          model: model
+        };
+
+      } catch (error) {
+        console.error(
+          "Network error:",
+          model,
+          error.message
+        );
+
+        lastError = {
+          response: null,
+          data: {
+            error: {
+              message: error.message
+            }
+          },
+          model: model
+        };
+
+        if (attempt < maxRetries) {
+          const delay = Math.pow(2, attempt) * 1000;
+
+          await sleep(delay);
         }
       }
     }
@@ -100,40 +178,66 @@ async function callGemini(contents, maxRetriesPerModel = 2) {
 
   return {
     success: false,
-    response: lastError?.response || null,
-    data: lastError?.data || { error: { message: "All models unavailable" } },
+    response: lastError ? lastError.response : null,
+    data: lastError
+      ? lastError.data
+      : {
+          error: {
+            message: "All Gemini models failed."
+          }
+        },
+    model: lastError ? lastError.model : null
   };
 }
 
-// ============================================================
-// Chat Endpoint
-// ============================================================
-
 app.post("/chat", async (req, res) => {
   try {
-    const message = req.body.message?.trim();
+    const message =
+      typeof req.body.message === "string"
+        ? req.body.message.trim()
+        : "";
 
     if (!message) {
-      return res.status(400).json({ reply: "Please enter a message." });
+      return res.status(400).json({
+        reply: "Please enter a message."
+      });
     }
 
-    let history = Array.isArray(req.body.history) ? req.body.history : [];
+    let history = Array.isArray(req.body.history)
+      ? req.body.history
+      : [];
+
     history = history.slice(-20);
 
     const contents = [];
 
     for (const item of history) {
-      if (!item?.message) continue;
-      const role = item.role === "assistant" ? "model" : "user";
+      if (!item || !item.message) {
+        continue;
+      }
+
+      const role =
+        item.role === "assistant"
+          ? "model"
+          : "user";
+
       contents.push({
-        role,
-        parts: [{ text: String(item.message) }],
+        role: role,
+        parts: [
+          {
+            text: String(item.message)
+          }
+        ]
       });
     }
 
     contents.push({
       role: "user",
-      parts: [{ text: message }],
+      parts: [
+        {
+          text: message
+        }
+      ]
     });
 
     const systemInstruction = `
@@ -143,105 +247,174 @@ Your purpose is to provide supportive, compassionate, practical
 conversation about emotional wellbeing and everyday mental wellness.
 
 IMPORTANT SAFETY RULES:
-• Never diagnose mental illnesses.
-• Never prescribe medication.
-• Never claim certainty about a user's emotional or mental state.
-• Do not pretend to be a doctor, psychologist, psychiatrist, or therapist.
-• Encourage professional help when the situation appears serious.
-• If the user indicates immediate danger, self-harm, suicide,
+
+- Never diagnose mental illnesses.
+- Never prescribe medication.
+- Never claim certainty about a user's emotional or mental state.
+- Do not pretend to be a doctor, psychologist, psychiatrist, or therapist.
+- Encourage professional help when the situation appears serious.
+- If the user indicates immediate danger, self-harm, suicide,
   or danger to another person, encourage them to contact local
   emergency services or a trusted person immediately.
-• Do not provide instructions for self-harm or harming others.
+- Do not provide instructions for self-harm or harming others.
 
 CONVERSATIONAL STYLE:
-• Be warm, empathetic, natural, and respectful.
-• Respond like a compassionate wellness companion.
-• Do not sound robotic.
-• Do not repeatedly use phrases such as "I hear you." or "Let's work through this together."
-• Vary your language naturally.
-• Do not lecture the user.
 
-For normal conversations:
+- Be warm, empathetic, natural, and respectful.
+- Respond like a compassionate wellness companion.
+- Do not sound robotic.
+- Do not repeatedly use phrases such as "I hear you."
+- Do not repeatedly use phrases such as
+  "Let's work through this together."
+- Vary your language naturally.
+- Do not lecture the user.
+
+FOR NORMAL CONVERSATIONS:
+
 1. Acknowledge what the user shared.
 2. Reflect on the situation when appropriate.
-3. Give 2 to 4 practical suggestions.
+3. Give 2 to 4 practical suggestions when useful.
 4. Offer encouragement.
 5. Ask one gentle follow-up question when useful.
 
-Response length: Normally 120 to 250 words.
 Keep the conversation focused on the user's current concern.
+
+Normal response length:
+120 to 250 words.
 `;
 
-    const requestContents = [
-      {
-        role: "user",
-        parts: [{ text: systemInstruction }],
-      },
-      ...contents,
-    ];
-
-    const result = await callGemini(requestContents, 2);
+    const result = await callGemini(
+      contents,
+      systemInstruction,
+      2
+    );
 
     if (!result.success) {
-      console.error("❌ Gemini failed:", JSON.stringify(result.data, null, 2));
+      const status =
+        result.response && result.response.status
+          ? result.response.status
+          : 500;
 
-      const status = result.response?.status || 500;
+      const errorMessage =
+        result.data &&
+        result.data.error &&
+        result.data.error.message
+          ? result.data.error.message
+          : "Unknown Gemini error.";
 
-      if (status === 503) {
-        return res.status(503).json({
-          reply: "I'm temporarily having trouble connecting to the AI service. Please try again in a moment.",
-          temporary: true,
+      console.error("--------------------------------");
+      console.error("GEMINI REQUEST FAILED");
+      console.error("Model:", result.model);
+      console.error("Status:", status);
+      console.error("Error:", errorMessage);
+      console.error(
+        JSON.stringify(result.data, null, 2)
+      );
+      console.error("--------------------------------");
+
+      if (status === 401 || status === 403) {
+        return res.status(status).json({
+          reply:
+            "The AI service authentication failed.",
+          temporary: false
         });
       }
 
       if (status === 429) {
         return res.status(429).json({
-          reply: "The AI service is receiving many requests right now. Please try again shortly.",
-          temporary: true,
+          reply:
+            "The AI service is currently receiving many requests. Please try again shortly.",
+          temporary: true
         });
       }
 
-      return res.status(status).json({
-        reply: "I'm having trouble generating a response right now. Please try again shortly.",
-        temporary: status >= 500,
+      if (status === 503) {
+        return res.status(503).json({
+          reply:
+            "The AI service is temporarily unavailable. Please try again in a moment.",
+          temporary: true
+        });
+      }
+
+      return res.status(500).json({
+        reply:
+          "I'm having trouble generating a response right now. Please try again shortly.",
+        temporary: true
       });
     }
 
-    const reply = result.data?.candidates?.[0]?.content?.parts
-      ?.map((part) => part.text || "")
+    const candidates =
+      result.data &&
+      Array.isArray(result.data.candidates)
+        ? result.data.candidates
+        : [];
+
+    const parts =
+      candidates.length > 0 &&
+      result.data.candidates[0].content &&
+      Array.isArray(
+        result.data.candidates[0].content.parts
+      )
+        ? result.data.candidates[0].content.parts
+        : [];
+
+    const reply = parts
+      .map((part) => {
+        return typeof part.text === "string"
+          ? part.text
+          : "";
+      })
       .join("")
       .trim();
 
     if (!reply) {
+      console.error(
+        "Gemini returned no text."
+      );
+
+      console.error(
+        JSON.stringify(result.data, null, 2)
+      );
+
       return res.status(500).json({
-        reply: "I couldn't generate a response right now. Please try again.",
+        reply:
+          "I couldn't generate a response right now. Please try again.",
+        temporary: true
       });
     }
 
-    console.log(`✅ Success with model: ${result.model}`);
+    console.log(
+      "SUCCESS with model:",
+      result.model
+    );
 
-    return res.json({
-      reply,
-      model: result.model,
+    return res.status(200).json({
+      reply: reply,
+      model: result.model
     });
-  } catch (err) {
-    console.error("❌ Gemini failed:");
-    console.error("Status:", result.response?.status);
-    console.error("Model:", result.model);
-    console.error("Response:", JSON.stringify(result.data, null, 2));
+
+  } catch (error) {
+    console.error("--------------------------------");
+    console.error("SERVER ERROR");
+    console.error(error);
+    console.error("--------------------------------");
+
     return res.status(500).json({
-      reply: "Something went wrong while connecting to the AI service. Please try again.",
+      reply:
+        "Something went wrong while connecting to the AI service. Please try again.",
+      temporary: true
     });
   }
 });
 
-// ============================================================
-// Start Server
-// ============================================================
-
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🤖 Preferred models: ${MODELS.join(" → ")}`);
+  console.log(
+    "Health's Best Friend Backend running on port " + PORT
+  );
+
+  console.log(
+    "Gemini models: " + MODELS.join(" -> ")
+  );
 });
