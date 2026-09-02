@@ -11,10 +11,7 @@ app.use(express.json());
 
 const API_KEY = process.env.GEMINI_API_KEY;
 
-if (!API_KEY) {
-  console.error("❌ GEMINI_API_KEY is missing.");
-  process.exit(1);
-}
+
 
 // ============================================================
 // Configuration - Models (newest first)
