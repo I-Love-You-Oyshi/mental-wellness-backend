@@ -225,7 +225,10 @@ Keep the conversation focused on the user's current concern.
       model: result.model,
     });
   } catch (err) {
-    console.error("❌ Server Error:", err);
+    console.error("❌ Gemini failed:");
+    console.error("Status:", result.response?.status);
+    console.error("Model:", result.model);
+    console.error("Response:", JSON.stringify(result.data, null, 2));
     return res.status(500).json({
       reply: "Something went wrong while connecting to the AI service. Please try again.",
     });
