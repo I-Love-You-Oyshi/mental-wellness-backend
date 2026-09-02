@@ -12,37 +12,75 @@ app.use(express.json({ limit: "1mb" }));
 const API_KEY = process.env.GEMINI_API_KEY;
 
 if (!API_KEY) {
-  console.error("GEMINI_API_KEY is missing.");
+  console.error("❌ GEMINI_API_KEY is missing.");
   process.exit(1);
 }
+
+// ============================================================
+// GEMINI MODELS
+// ============================================================
 
 const MODELS = [
   "gemini-3.7-flash",
   "gemini-3.6-flash",
   "gemini-3.5-flash",
-  "gemini-3.5-flash-lite"
+  "gemini-3.5-flash-lite",
 ];
 
+// ============================================================
+// ROUTES
+// ============================================================
+
 app.get("/", (req, res) => {
-  res.json({
+  res.status(200).json({
     status: "ok",
     service: "Health's Best Friend Backend",
-    models: MODELS
+    models: MODELS,
   });
 });
 
 app.get("/health", (req, res) => {
   res.status(200).json({
     status: "healthy",
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   });
 });
+
+// ============================================================
+// HELPERS
+// ============================================================
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function callGemini(contents, systemInstruction, maxRetries = 2) {
+// Timeout for one Gemini API request
+async function fetchWithTimeout(url, options, timeoutMs = 45000) {
+  const controller = new AbortController();
+
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// ============================================================
+// GEMINI REQUEST
+// ============================================================
+
+async function callGemini(
+  contents,
+  systemInstruction,
+  maxRetries = 1
+) {
   let lastError = null;
 
   for (const model of MODELS) {
@@ -55,32 +93,42 @@ async function callGemini(contents, systemInstruction, maxRetries = 2) {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         console.log(
+          "--------------------------------"
+        );
+
+        console.log(
           "Trying model:",
           model,
           "Attempt:",
           attempt + 1
         );
 
-        const response = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            systemInstruction: {
-              parts: [
-                {
-                  text: systemInstruction
-                }
-              ]
+        const response = await fetchWithTimeout(
+          url,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
             },
-            contents: contents,
-            generationConfig: {
-              temperature: 0.7,
-              maxOutputTokens: 500
-            }
-          })
-        });
+            body: JSON.stringify({
+              systemInstruction: {
+                parts: [
+                  {
+                    text: systemInstruction,
+                  },
+                ],
+              },
+
+              contents: contents,
+
+              generationConfig: {
+                temperature: 0.7,
+                maxOutputTokens: 500,
+              },
+            }),
+          },
+          45000
+        );
 
         let data;
 
@@ -89,8 +137,8 @@ async function callGemini(contents, systemInstruction, maxRetries = 2) {
         } catch (error) {
           data = {
             error: {
-              message: "Invalid response from Gemini."
-            }
+              message: "Invalid response from Gemini.",
+            },
           };
         }
 
@@ -101,19 +149,36 @@ async function callGemini(contents, systemInstruction, maxRetries = 2) {
           response.status
         );
 
+        // ====================================================
+        // SUCCESS
+        // ====================================================
+
         if (response.ok) {
+          console.log(
+            "SUCCESS with model:",
+            model
+          );
+
+          console.log(
+            "--------------------------------"
+          );
+
           return {
             success: true,
-            response: response,
-            data: data,
-            model: model
+            response,
+            data,
+            model,
           };
         }
 
+        // ====================================================
+        // ERROR
+        // ====================================================
+
         lastError = {
-          response: response,
-          data: data,
-          model: model
+          response,
+          data,
+          model,
         };
 
         console.error(
@@ -121,9 +186,15 @@ async function callGemini(contents, systemInstruction, maxRetries = 2) {
           JSON.stringify(data, null, 2)
         );
 
-        if ([429, 500, 502, 503, 504].includes(response.status)) {
+        // Retry temporary errors
+        if (
+          [429, 500, 502, 503, 504].includes(
+            response.status
+          )
+        ) {
           if (attempt < maxRetries) {
-            const delay = Math.pow(2, attempt) * 1000;
+            const delay =
+              Math.pow(2, attempt) * 1000;
 
             console.log(
               "Retrying in",
@@ -132,27 +203,29 @@ async function callGemini(contents, systemInstruction, maxRetries = 2) {
             );
 
             await sleep(delay);
+
             continue;
           }
 
           console.log(
-            model,
-            "failed. Trying next model."
+            "Model failed:",
+            model
           );
 
           break;
         }
 
+        // Authentication or invalid request
         return {
           success: false,
-          response: response,
-          data: data,
-          model: model
+          response,
+          data,
+          model,
         };
 
       } catch (error) {
         console.error(
-          "Network error:",
+          "Network or timeout error:",
           model,
           error.message
         );
@@ -161,14 +234,21 @@ async function callGemini(contents, systemInstruction, maxRetries = 2) {
           response: null,
           data: {
             error: {
-              message: error.message
-            }
+              message: error.message,
+            },
           },
-          model: model
+          model,
         };
 
         if (attempt < maxRetries) {
-          const delay = Math.pow(2, attempt) * 1000;
+          const delay =
+            Math.pow(2, attempt) * 1000;
+
+          console.log(
+            "Retrying after",
+            delay,
+            "ms..."
+          );
 
           await sleep(delay);
         }
@@ -178,20 +258,42 @@ async function callGemini(contents, systemInstruction, maxRetries = 2) {
 
   return {
     success: false,
-    response: lastError ? lastError.response : null,
+
+    response: lastError
+      ? lastError.response
+      : null,
+
     data: lastError
       ? lastError.data
       : {
           error: {
-            message: "All Gemini models failed."
-          }
+            message:
+              "All Gemini models failed.",
+          },
         },
-    model: lastError ? lastError.model : null
+
+    model: lastError
+      ? lastError.model
+      : null,
   };
 }
 
+// ============================================================
+// CHAT ENDPOINT
+// ============================================================
+
 app.post("/chat", async (req, res) => {
+  const requestStart = Date.now();
+
   try {
+    console.log(
+      "================================"
+    );
+
+    console.log(
+      "NEW CHAT REQUEST RECEIVED"
+    );
+
     const message =
       typeof req.body.message === "string"
         ? req.body.message.trim()
@@ -199,15 +301,31 @@ app.post("/chat", async (req, res) => {
 
     if (!message) {
       return res.status(400).json({
-        reply: "Please enter a message."
+        reply: "Please enter a message.",
       });
     }
 
-    let history = Array.isArray(req.body.history)
+    console.log(
+      "User message:",
+      message.substring(0, 100)
+    );
+
+    let history = Array.isArray(
+      req.body.history
+    )
       ? req.body.history
       : [];
 
     history = history.slice(-20);
+
+    console.log(
+      "History messages:",
+      history.length
+    );
+
+    // ========================================================
+    // BUILD CONVERSATION
+    // ========================================================
 
     const contents = [];
 
@@ -222,12 +340,12 @@ app.post("/chat", async (req, res) => {
           : "user";
 
       contents.push({
-        role: role,
+        role,
         parts: [
           {
-            text: String(item.message)
-          }
-        ]
+            text: String(item.message),
+          },
+        ],
       });
     }
 
@@ -235,10 +353,14 @@ app.post("/chat", async (req, res) => {
       role: "user",
       parts: [
         {
-          text: message
-        }
-      ]
+          text: message,
+        },
+      ],
     });
+
+    // ========================================================
+    // SYSTEM INSTRUCTION
+    // ========================================================
 
     const systemInstruction = `
 You are Health's Best Friend, an AI Mental Wellness Companion.
@@ -263,35 +385,42 @@ CONVERSATIONAL STYLE:
 - Be warm, empathetic, natural, and respectful.
 - Respond like a compassionate wellness companion.
 - Do not sound robotic.
-- Do not repeatedly use phrases such as "I hear you."
-- Do not repeatedly use phrases such as
-  "Let's work through this together."
-- Vary your language naturally.
 - Do not lecture the user.
+- Vary your language naturally.
+- Avoid repeating the same phrases.
 
 FOR NORMAL CONVERSATIONS:
 
 1. Acknowledge what the user shared.
 2. Reflect on the situation when appropriate.
-3. Give 2 to 4 practical suggestions when useful.
+3. Give practical suggestions when useful.
 4. Offer encouragement.
 5. Ask one gentle follow-up question when useful.
 
 Keep the conversation focused on the user's current concern.
 
 Normal response length:
-120 to 250 words.
+100 to 200 words.
 `;
+
+    // ========================================================
+    // CALL GEMINI
+    // ========================================================
 
     const result = await callGemini(
       contents,
       systemInstruction,
-      2
+      1
     );
+
+    // ========================================================
+    // FAILURE
+    // ========================================================
 
     if (!result.success) {
       const status =
-        result.response && result.response.status
+        result.response &&
+        result.response.status
           ? result.response.status
           : 500;
 
@@ -302,29 +431,45 @@ Normal response length:
           ? result.data.error.message
           : "Unknown Gemini error.";
 
-      console.error("--------------------------------");
-      console.error("GEMINI REQUEST FAILED");
-      console.error("Model:", result.model);
-      console.error("Status:", status);
-      console.error("Error:", errorMessage);
       console.error(
-        JSON.stringify(result.data, null, 2)
+        "GEMINI REQUEST FAILED"
       );
-      console.error("--------------------------------");
 
-      if (status === 401 || status === 403) {
+      console.error(
+        "Model:",
+        result.model
+      );
+
+      console.error(
+        "Status:",
+        status
+      );
+
+      console.error(
+        "Error:",
+        errorMessage
+      );
+
+      console.log(
+        "================================"
+      );
+
+      if (
+        status === 401 ||
+        status === 403
+      ) {
         return res.status(status).json({
           reply:
             "The AI service authentication failed.",
-          temporary: false
+          temporary: false,
         });
       }
 
       if (status === 429) {
         return res.status(429).json({
           reply:
-            "The AI service is currently receiving many requests. Please try again shortly.",
-          temporary: true
+            "The AI service is currently busy. Please try again shortly.",
+          temporary: true,
         });
       }
 
@@ -332,89 +477,129 @@ Normal response length:
         return res.status(503).json({
           reply:
             "The AI service is temporarily unavailable. Please try again in a moment.",
-          temporary: true
+          temporary: true,
         });
       }
 
       return res.status(500).json({
         reply:
           "I'm having trouble generating a response right now. Please try again shortly.",
-        temporary: true
+        temporary: true,
       });
     }
 
+    // ========================================================
+    // EXTRACT RESPONSE
+    // ========================================================
+
     const candidates =
-      result.data &&
       Array.isArray(result.data.candidates)
         ? result.data.candidates
         : [];
 
     const parts =
       candidates.length > 0 &&
-      result.data.candidates[0].content &&
+      candidates[0].content &&
       Array.isArray(
-        result.data.candidates[0].content.parts
+        candidates[0].content.parts
       )
-        ? result.data.candidates[0].content.parts
+        ? candidates[0].content.parts
         : [];
 
     const reply = parts
-      .map((part) => {
-        return typeof part.text === "string"
+      .map((part) =>
+        typeof part.text === "string"
           ? part.text
-          : "";
-      })
+          : ""
+      )
       .join("")
       .trim();
 
     if (!reply) {
       console.error(
-        "Gemini returned no text."
+        "Gemini returned an empty response."
       );
 
       console.error(
-        JSON.stringify(result.data, null, 2)
+        JSON.stringify(
+          result.data,
+          null,
+          2
+        )
       );
 
       return res.status(500).json({
         reply:
           "I couldn't generate a response right now. Please try again.",
-        temporary: true
+        temporary: true,
       });
     }
 
+    const totalTime =
+      Date.now() - requestStart;
+
     console.log(
-      "SUCCESS with model:",
+      "REQUEST COMPLETED"
+    );
+
+    console.log(
+      "Model:",
       result.model
     );
 
+    console.log(
+      "Time:",
+      totalTime + "ms"
+    );
+
+    console.log(
+      "================================"
+    );
+
     return res.status(200).json({
-      reply: reply,
-      model: result.model
+      reply,
+      model: result.model,
+      responseTime: totalTime,
     });
 
   } catch (error) {
-    console.error("--------------------------------");
-    console.error("SERVER ERROR");
+    console.error(
+      "================================"
+    );
+
+    console.error(
+      "SERVER ERROR"
+    );
+
     console.error(error);
-    console.error("--------------------------------");
+
+    console.error(
+      "================================"
+    );
 
     return res.status(500).json({
       reply:
         "Something went wrong while connecting to the AI service. Please try again.",
-      temporary: true
+      temporary: true,
     });
   }
 });
 
-const PORT = process.env.PORT || 10000;
+// ============================================================
+// START SERVER
+// ============================================================
+
+const PORT =
+  process.env.PORT || 10000;
 
 app.listen(PORT, () => {
   console.log(
-    "Health's Best Friend Backend running on port " + PORT
+    "Health's Best Friend Backend running on port " +
+      PORT
   );
 
   console.log(
-    "Gemini models: " + MODELS.join(" -> ")
+    "Gemini models: " +
+      MODELS.join(" -> ")
   );
 });
